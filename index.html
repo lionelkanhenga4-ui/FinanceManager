@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Finance Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <section id="auth-screen" class="screen active">
+        <div class="auth-shell">
+          <div class="brand-block">
+            <div class="logo-mark">F</div>
+            <div>
+              <p class="eyebrow">Finance Manager</p>
+              <h1>Take control of your money</h1>
+            </div>
+          </div>
+
+          <div class="auth-card">
+            <div class="auth-header">
+              <h2 id="auth-title">Welcome Back</h2>
+              <p id="auth-subtitle">Sign in to manage your finances</p>
+            </div>
+
+            <form id="auth-form" class="auth-form">
+              <label class="field">
+                <span>Email</span>
+                <input id="email-input" type="email" placeholder="name@example.com" required />
+              </label>
+
+              <label class="field">
+                <span>Password</span>
+                <input id="password-input" type="password" placeholder="••••••••" required />
+              </label>
+
+              <label id="confirm-password-wrapper" class="field hidden">
+                <span>Confirm Password</span>
+                <input id="confirm-password-input" type="password" placeholder="Repeat password" />
+              </label>
+
+              <button id="auth-submit" type="submit" class="primary-btn">
+                Login
+              </button>
+            </form>
+
+            <p class="switch-copy">
+              <span id="switch-text">Don't have an account?</span>
+              <button id="auth-toggle" type="button" class="link-btn">Sign up</button>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="dashboard-screen" class="screen">
+        <div class="dashboard-shell">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">Overview</p>
+              <h2>Dashboard</h2>
+            </div>
+            <button id="logout-btn" class="icon-button" aria-label="Logout" title="Logout">
+              ⎋
+            </button>
+          </header>
+
+          <main class="content-area">
+            <section class="balance-card">
+              <div class="card-label-row">
+                <div class="mini-wallet">◌</div>
+                <span>Total Balance</span>
+              </div>
+              <h3 id="balance-amount">$0.00</h3>
+            </section>
+
+            <div class="summary-row">
+              <article class="summary-card income-card">
+                <div class="summary-head">
+                  <div class="icon-badge income-icon">↓</div>
+                  <span>Income</span>
+                </div>
+                <strong id="income-total">+$0.00</strong>
+              </article>
+
+              <article class="summary-card expense-card">
+                <div class="summary-head">
+                  <div class="icon-badge expense-icon">↑</div>
+                  <span>Expenses</span>
+                </div>
+                <strong id="expense-total">-$0.00</strong>
+              </article>
+            </div>
+
+            <section class="panel">
+              <div class="section-header">
+                <h3>Recent Transactions</h3>
+                <button id="see-all-btn" class="text-btn" type="button">See All</button>
+              </div>
+
+              <div id="empty-state" class="empty-state hidden">
+                <div class="empty-icon">◌</div>
+                <h4>No transactions yet</h4>
+                <p>Tap the + button to add your first transaction</p>
+              </div>
+
+              <div id="recent-list" class="transaction-list"></div>
+            </section>
+          </main>
+
+          <nav class="bottom-nav" aria-label="Main navigation">
+            <button class="nav-item active" data-tab="home" type="button">Overview</button>
+            <button class="nav-item" data-tab="transactions" type="button">Transactions</button>
+            <button class="nav-item" data-tab="analytics" type="button">Analytics</button>
+          </nav>
+        </div>
+
+        <button id="fab-add" class="fab" type="button" aria-label="Add transaction">+</button>
+      </section>
+
+      <section id="transactions-panel" class="screen panel-screen">
+        <div class="panel-header-row">
+          <h2>Transaction History</h2>
+        </div>
+
+        <div class="filter-row">
+          <button class="chip active" data-filter="all" type="button">All</button>
+          <button class="chip" data-filter="income" type="button">Income</button>
+          <button class="chip" data-filter="expense" type="button">Expenses</button>
+        </div>
+
+        <div id="transaction-empty" class="empty-state hidden">
+          <div class="empty-icon">◌</div>
+          <h4>No transactions yet</h4>
+          <p>Tap the + button to add your first transaction</p>
+        </div>
+
+        <div id="transactions-list" class="transaction-list full-list"></div>
+      </section>
+
+      <section id="analytics-panel" class="screen panel-screen">
+        <div class="panel-header-row">
+          <h2>Spending &amp; Analytics</h2>
+        </div>
+
+        <div class="analytics-card">
+          <div class="analytics-header">
+            <h3>Category Breakdown</h3>
+            <p>Track where your money goes by category</p>
+          </div>
+
+          <div id="analytics-empty" class="empty-state hidden">
+            <div class="empty-icon">◌</div>
+            <h4>No data available</h4>
+            <p>Add transactions to view category trends</p>
+          </div>
+
+          <div id="analytics-list" class="analytics-list"></div>
+        </div>
+      </section>
+    </div>
+
+    <div id="transaction-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-backdrop" data-close="true"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <h3 id="modal-title">Add Transaction</h3>
+          <button id="close-modal" class="icon-button" type="button" aria-label="Close">×</button>
+        </div>
+
+        <form id="transaction-form" class="transaction-form">
+          <div class="segment-control">
+            <button class="segment active" data-type="expense" type="button">Expense</button>
+            <button class="segment" data-type="income" type="button">Income</button>
+          </div>
+
+          <label class="field">
+            <span>Title</span>
+            <input id="transaction-title" type="text" placeholder="Groceries, Salary, Rent" required />
+          </label>
+
+          <label class="field">
+            <span>Amount</span>
+            <input id="transaction-amount" type="number" min="0.01" step="0.01" placeholder="0.00" required />
+          </label>
+
+          <label class="field">
+            <span>Category</span>
+            <select id="transaction-category">
+              <option value="Food">Food</option>
+              <option value="Housing">Housing</option>
+              <option value="Transport">Transport</option>
+              <option value="Shopping">Shopping</option>
+              <option value="Utilities">Utilities</option>
+              <option value="Health">Health</option>
+              <option value="Entertainment">Entertainment</option>
+              <option value="Salary">Salary</option>
+              <option value="Freelance">Freelance</option>
+              <option value="Other">Other</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>Account</span>
+            <select id="transaction-account">
+              <option value="Checking">Checking</option>
+              <option value="Savings">Savings</option>
+              <option value="Credit Card">Credit Card</option>
+            </select>
+          </label>
+
+          <button type="submit" class="primary-btn wide">Save Transaction</button>
+        </form>
+      </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="supabase-config.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
