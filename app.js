@@ -2,9 +2,13 @@ const STORAGE_KEY = 'finance-manager-demo-state';
 
 const { createClient } = window.supabase;
 const config = window.SUPABASE_CONFIG || {};
-const supabase = createClient(config.url, config.anonKey);
+const supabaseClient = createClient(config.url, config.anonKey);
 
 const defaultTransactions = [];
+const defaultCategories = [
+  'Food', 'Housing', 'Transport', 'Shopping', 'Utilities', 'Health',
+  'Entertainment', 'Salary', 'Freelance', 'Other'
+];
 
 const state = {
   authMode: 'login',
@@ -94,7 +98,7 @@ function normalizeTransaction(row) {
     amount: amountValue,
     type: rawType === 'income' ? 'income' : 'expense',
     category: row.category_name || row.category || 'Other',
-    account: row.account_id || row.account || 'Checking',
+    account: row.account_id || row.account || 'No account',
     date: typeof rawDate === 'number' ? new Date(rawDate).toISOString() : rawDate,
     user_id: row.user_id || null
   };
@@ -173,17 +177,33 @@ function renderTransactionCards(items, target, compact) {
       day: 'numeric'
     });
 
-    row.innerHTML = `
-      <div class="category-icon ${typeClass}">${iconText}</div>
-      <div class="transaction-main">
-        <strong>${item.title}</strong>
-        <span class="transaction-meta">${item.category} • ${prettyDate}</span>
-      </div>
-      <div class="amount-block">
-        <strong class="${typeClass}">${amountText}${formatCurrency(item.amount).replace('$', '$')}</strong>
-        <button class="delete-btn" type="button" data-delete="${item.id}" aria-label="Delete transaction">Delete</button>
-      </div>
-    `;
+    const icon = document.createElement('div');
+    icon.className = `category-icon ${typeClass}`;
+    icon.textContent = iconText;
+
+    const main = document.createElement('div');
+    main.className = 'transaction-main';
+    const title = document.createElement('strong');
+    title.textContent = item.title;
+    const meta = document.createElement('span');
+    meta.className = 'transaction-meta';
+    meta.textContent = `${item.category} • ${prettyDate}`;
+    main.append(title, meta);
+
+    const amountBlock = document.createElement('div');
+    amountBlock.className = 'amount-block';
+    const amountLabel = document.createElement('strong');
+    amountLabel.className = typeClass;
+    amountLabel.textContent = `${amountText}${formatCurrency(item.amount)}`;
+    const deleteButton = document.createElement('button');
+    deleteButton.className = 'delete-btn';
+    deleteButton.type = 'button';
+    deleteButton.dataset.delete = item.id;
+    deleteButton.setAttribute('aria-label', 'Delete transaction');
+    deleteButton.textContent = 'Delete';
+    amountBlock.append(amountLabel, deleteButton);
+
+    row.append(icon, main, amountBlock);
 
     if (compact) {
       row.querySelector('.delete-btn').style.display = 'none';
@@ -228,13 +248,20 @@ function renderAnalytics() {
       const percent = Math.round((amount / totalExpense) * 100);
       const row = document.createElement('div');
       row.className = 'analytics-row';
-      row.innerHTML = `
-        <div class="analytics-row-top">
-          <span>${name}</span>
-          <strong>${formatCurrency(amount)} (${percent}%)</strong>
-        </div>
-        <div class="progress-bar"><span style="width: ${percent}%"></span></div>
-      `;
+      const top = document.createElement('div');
+      top.className = 'analytics-row-top';
+      const categoryName = document.createElement('span');
+      categoryName.textContent = name;
+      const total = document.createElement('strong');
+      total.textContent = `${formatCurrency(amount)} (${percent}%)`;
+      top.append(categoryName, total);
+
+      const progress = document.createElement('div');
+      progress.className = 'progress-bar';
+      const progressValue = document.createElement('span');
+      progressValue.style.width = `${percent}%`;
+      progress.appendChild(progressValue);
+      row.append(top, progress);
       els.analyticsList.appendChild(row);
     });
 }
@@ -286,16 +313,11 @@ function populateTransactionSelectors() {
   }
 
   if (!state.categories.length) {
-    const categoryOption = document.createElement('option');
-    categoryOption.value = '';
-    categoryOption.textContent = 'No categories available';
-    categorySelect.appendChild(categoryOption);
-  } else {
-    state.categories.forEach((category) => {
-      const option = document.createElement('option');
-      option.value = category.id;
-      option.textContent = category.name || 'Category';
-      categorySelect.appendChild(option);
+    defaultCategories.forEach((name) => {
+      const categoryOption = document.createElement('option');
+      categoryOption.value = name;
+      categoryOption.textContent = name;
+      categorySelect.appendChild(categoryOption);
     });
   }
 }
@@ -328,21 +350,17 @@ function showError(message) {
 async function loadAccountsAndCategories() {
   if (!state.user) return;
 
-  const [{ data: accountsData, error: accountsError }, { data: categoriesData, error: categoriesError }] = await Promise.all([
-    supabase.from('accounts').select('*').eq('user_id', state.user.id),
-    supabase.from('categories').select('*').eq('user_id', state.user.id)
-  ]);
+  const { data: accountsData, error: accountsError } = await supabaseClient
+    .from('accounts')
+    .select('*')
+    .eq('user_id', state.user.id);
 
   if (accountsError) {
     console.error(accountsError);
   }
 
-  if (categoriesError) {
-    console.error(categoriesError);
-  }
-
   state.accounts = accountsData || [];
-  state.categories = categoriesData || [];
+  state.categories = [];
   populateTransactionSelectors();
 }
 
@@ -354,7 +372,7 @@ async function loadTransactions() {
     return;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await supabaseClient
     .from('transactions')
     .select('*')
     .eq('user_id', state.user.id);
@@ -377,28 +395,20 @@ async function insertTransaction(transaction) {
   if (!state.user) return;
 
   const accountValue = transaction.account || '';
-  const categoryValue = transaction.category || '';
   const safeAccountId = accountValue && accountValue.length === 36 ? accountValue : null;
-  const safeCategoryId = categoryValue && categoryValue.length === 36 ? categoryValue : null;
-  const selectedAccount = state.accounts.find((item) => item.id === safeAccountId) || null;
-  const selectedCategory = state.categories.find((item) => item.id === safeCategoryId) || null;
-  const transactionDate = new Date().toISOString().slice(0, 10);
 
   const payload = {
     title: transaction.title,
-    description: transaction.title,
     amount: Number(transaction.amount),
     type: transaction.type,
-    category_name: selectedCategory ? selectedCategory.name : transaction.category || 'Other',
-    category_id: safeCategoryId,
+    category_name: transaction.category || 'Other',
     account_id: safeAccountId,
     user_id: state.user.id,
-    transaction_date: transactionDate,
     date: Date.now(),
     income: transaction.type === 'income'
   };
 
-  const { error } = await supabase.from('transactions').insert(payload);
+  const { error } = await supabaseClient.from('transactions').insert(payload);
   if (error) {
     console.error(error);
     showError('Could not save transaction to Supabase.');
@@ -409,7 +419,7 @@ async function insertTransaction(transaction) {
 }
 
 async function deleteTransaction(id) {
-  const { error } = await supabase.from('transactions').delete().eq('id', id);
+  const { error } = await supabaseClient.from('transactions').delete().eq('id', id);
   if (error) {
     console.error(error);
     showError('Could not delete transaction from Supabase.');
@@ -419,7 +429,7 @@ async function deleteTransaction(id) {
 }
 
 async function initializeSession() {
-  const { data: { session }, error } = await supabase.auth.getSession();
+  const { data: { session }, error } = await supabaseClient.auth.getSession();
   if (error) {
     console.error(error);
   }
@@ -439,7 +449,7 @@ async function initializeSession() {
 async function handleLogin(event) {
   event.preventDefault();
   const email = els.emailInput.value.trim();
-  const password = els.passwordInput.value.trim();
+  const password = els.passwordInput.value;
 
   if (!email || !password) {
     showError('Enter your email and password');
@@ -447,7 +457,7 @@ async function handleLogin(event) {
   }
 
   if (state.authMode === 'signup') {
-    const confirm = els.confirmPasswordInput.value.trim();
+    const confirm = els.confirmPasswordInput.value;
     if (password.length < 6) {
       showError('Password must be at least 6 characters');
       return;
@@ -457,7 +467,7 @@ async function handleLogin(event) {
       return;
     }
 
-    const { error } = await supabase.auth.signUp({ email, password });
+    const { error } = await supabaseClient.auth.signUp({ email, password });
     if (error) {
       showError(error.message || 'Sign up failed.');
       return;
@@ -470,7 +480,7 @@ async function handleLogin(event) {
     return;
   }
 
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) {
     showError(error.message || 'Login failed.');
     return;
@@ -511,7 +521,7 @@ async function handleAddTransaction(event) {
 }
 
 async function logout() {
-  const { error } = await supabase.auth.signOut();
+  const { error } = await supabaseClient.auth.signOut();
   if (error) {
     console.error(error);
   }
