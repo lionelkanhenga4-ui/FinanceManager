@@ -10,6 +10,7 @@ const defaultCategories = [
   'Entertainment', 'Salary', 'Freelance', 'Other'
 ];
 const SYNC_INTERVAL_MS = 15_000;
+const SYNC_INTERVAL_MS = 15_000;
 
 const state = {
   authMode: 'login',
@@ -435,7 +436,7 @@ async function insertTransaction(transaction) {
   return true;
 }
 
-async function deleteTransaction(id) {
+async function loadTransactions(silent = false) {
   const { error } = await supabaseClient.from('transactions').delete().eq('id', id);
   if (error) {
     console.error(error);
@@ -443,24 +444,40 @@ async function deleteTransaction(id) {
     return false;
   }
   return true;
+  if (state.isSyncing) return;
+  state.isSyncing = true;
+  if (error) {
+  try {
+    const { data, error } = await supabaseClient
+      .from('transactions')
+      .select('*')
+      .eq('user_id', state.user.id);
+
+    if (error) {
+      console.error(error);
+      if (!silent) showError('Could not load transactions from Supabase.');
+      return;
+    }
+  } else {
+    state.transactions = (data || [])
+      .map(normalizeTransaction)
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    saveState();
+    renderAll();
+  } finally {
+    state.isSyncing = false;
+  }
+  }
+
+function refreshVisibleSession() {
+  if (state.loggedIn && document.visibilityState === 'visible') {
+    void loadTransactions(true);
+  }
 }
 
-async function initializeSession() {
-  const { data: { session }, error } = await supabaseClient.auth.getSession();
-  if (error) {
-    console.error(error);
-  }
-
-  state.user = session?.user || null;
-  state.loggedIn = Boolean(session);
-
-  if (state.loggedIn) {
-    await loadAccountsAndCategories();
-    await loadTransactions();
-  } else {
-    state.transactions = loadState('transactions', defaultTransactions);
-    renderAll();
-  }
+window.setInterval(refreshVisibleSession, SYNC_INTERVAL_MS);
+document.addEventListener('visibilitychange', refreshVisibleSession);
 }
 
 async function handleLogin(event) {
