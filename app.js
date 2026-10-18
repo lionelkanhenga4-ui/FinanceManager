@@ -9,6 +9,7 @@ const defaultCategories = [
   'Food', 'Housing', 'Transport', 'Shopping', 'Utilities', 'Health',
   'Entertainment', 'Salary', 'Freelance', 'Other'
 ];
+const SYNC_INTERVAL_MS = 15_000;
 
 const state = {
   authMode: 'login',
@@ -364,7 +365,7 @@ async function loadAccountsAndCategories() {
   populateTransactionSelectors();
 }
 
-async function loadTransactions() {
+async function loadTransactions(silent = false) {
   if (!state.user) {
     state.transactions = loadState('transactions', defaultTransactions);
     saveState();
@@ -372,24 +373,40 @@ async function loadTransactions() {
     return;
   }
 
-  const { data, error } = await supabaseClient
-    .from('transactions')
-    .select('*')
-    .eq('user_id', state.user.id);
+  if (state.isSyncing) return;
+  state.isSyncing = true;
 
-  if (error) {
-    console.error(error);
-    showError('Could not load transactions from Supabase.');
-    return;
+  try {
+    const { data, error } = await supabaseClient
+      .from('transactions')
+      .select('*')
+      .eq('user_id', state.user.id);
+
+    if (error) {
+      console.error(error);
+      if (!silent) showError('Could not load transactions from Supabase.');
+      return;
+    }
+
+    state.transactions = (data || [])
+      .map(normalizeTransaction)
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    saveState();
+    renderAll();
+  } finally {
+    state.isSyncing = false;
   }
-
-  state.transactions = (data || [])
-    .map(normalizeTransaction)
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
-
-  saveState();
-  renderAll();
 }
+
+function refreshVisibleSession() {
+  if (state.loggedIn && document.visibilityState === 'visible') {
+    void loadTransactions(true);
+  }
+}
+
+window.setInterval(refreshVisibleSession, SYNC_INTERVAL_MS);
+document.addEventListener('visibilitychange', refreshVisibleSession);
 
 async function insertTransaction(transaction) {
   if (!state.user) return;
