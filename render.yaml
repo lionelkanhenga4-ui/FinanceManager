@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: finance-manager
+    runtime: static
+    buildCommand: "echo 'No build step required'"
+    staticPublishPath: .
