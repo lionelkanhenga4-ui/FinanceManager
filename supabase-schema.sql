@@ -25,6 +25,28 @@ create table if not exists public.transactions (
 alter table public.accounts add column if not exists user_id uuid references auth.users(id) on delete cascade;
 alter table public.accounts add column if not exists name text;
 alter table public.accounts add column if not exists balance numeric(12, 2) not null default 0;
+alter table public.accounts add column if not exists type text;
+
+do $$
+declare
+  constraint_name text;
+begin
+  for constraint_name in
+    select conname
+    from pg_constraint
+    where conrelid = 'public.accounts'::regclass
+      and contype = 'c'
+  loop
+    execute format('alter table public.accounts drop constraint if exists %I', constraint_name);
+  end loop;
+end $$;
+
+update public.accounts
+set type = coalesce(nullif(trim(type), ''), 'Other')
+where type is null or trim(type) = '';
+
+alter table public.accounts alter column type set default 'Other';
+alter table public.accounts alter column type set not null;
 alter table public.transactions add column if not exists user_id uuid references auth.users(id) on delete cascade;
 alter table public.transactions add column if not exists title text;
 alter table public.transactions add column if not exists amount numeric(12, 2) not null default 0;
@@ -32,8 +54,52 @@ alter table public.transactions add column if not exists type text;
 alter table public.transactions add column if not exists income boolean not null default false;
 alter table public.transactions add column if not exists category_name text not null default 'Other';
 alter table public.transactions add column if not exists account_id uuid;
+alter table public.transactions add column if not exists destination_account_id uuid references public.accounts(id) on delete set null;
+alter table public.transactions add column if not exists savings_goal_id uuid;
 alter table public.transactions add column if not exists date bigint;
 alter table public.transactions add column if not exists created_at timestamptz not null default now();
+
+do $$
+declare
+  account_id_type text;
+begin
+  select data_type into account_id_type
+  from information_schema.columns
+  where table_schema = 'public'
+    and table_name = 'transactions'
+    and column_name = 'account_id';
+
+  if account_id_type in ('text', 'character varying') then
+    update public.transactions
+    set account_id = null
+    where account_id is not null
+      and account_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+    alter table public.transactions
+      alter column account_id type uuid
+      using nullif(account_id, '')::uuid;
+  end if;
+end $$;
+
+update public.transactions transaction_row
+set account_id = null
+where account_id is not null
+  and not exists (
+    select 1 from public.accounts account_row
+    where account_row.id = transaction_row.account_id
+  );
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'transactions_account_id_fkey'
+      and conrelid = 'public.transactions'::regclass
+  ) then
+    alter table public.transactions
+      add constraint transactions_account_id_fkey
+      foreign key (account_id) references public.accounts(id) on delete set null;
+  end if;
+end $$;
 
 do $$
 declare
@@ -54,11 +120,18 @@ end $$;
 
 update public.transactions
 set type = case when income then 'income' else 'expense' end
-where type is null or type not in ('income', 'expense');
+where type is null or type not in ('income', 'expense', 'transfer', 'opening', 'goal_contribution');
 
 update public.transactions
 set income = (type = 'income')
 where income is distinct from (type = 'income');
+
+alter table public.transactions drop constraint if exists transactions_type_check;
+alter table public.transactions drop constraint if exists transactions_type_income_match;
+alter table public.transactions add constraint transactions_type_check
+  check (type in ('income', 'expense', 'transfer', 'opening', 'goal_contribution'));
+alter table public.transactions add constraint transactions_type_income_match
+  check (income = (type = 'income'));
 
 update public.transactions
 set date = (extract(epoch from created_at) * 1000)::bigint
@@ -110,3 +183,328 @@ using (auth.uid() = user_id);
 grant select, insert, update, delete on public.accounts to authenticated;
 grant select, insert, update, delete on public.transactions to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
+
+create table if not exists public.budgets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  category_name text not null,
+  limit_amount numeric(12, 2) not null check (limit_amount > 0),
+  month text not null check (month ~ '^[0-9]{4}-[0-9]{2}$'),
+  created_at timestamptz not null default now(),
+  unique (user_id, category_name, month)
+);
+
+alter table public.budgets add column if not exists category_name text;
+update public.budgets
+set category_name = coalesce(nullif(trim(category_name), ''), nullif(trim(name), ''), 'Other')
+where category_name is null or trim(category_name) = '';
+alter table public.budgets alter column category_name set default 'Other';
+alter table public.budgets alter column category_name set not null;
+
+alter table public.budgets add column if not exists limit_amount numeric(12, 2);
+do $$
+declare
+  legacy_column text;
+begin
+  foreach legacy_column in array array['amount', 'budget_amount', 'monthly_limit', 'budget_limit'] loop
+    if exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'budgets'
+        and column_name = legacy_column
+    ) then
+      execute format(
+        'update public.budgets set limit_amount = %I::numeric where limit_amount is null',
+        legacy_column
+      );
+      exit;
+    end if;
+  end loop;
+end $$;
+
+do $$
+declare
+  legacy_column text;
+begin
+  foreach legacy_column in array array['amount', 'budget_amount', 'monthly_limit', 'budget_limit', 'period'] loop
+    if exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'budgets'
+        and column_name = legacy_column
+    ) then
+      execute format(
+        'alter table public.budgets alter column %I drop not null',
+        legacy_column
+      );
+    end if;
+  end loop;
+end $$;
+
+alter table public.budgets add column if not exists month text;
+update public.budgets
+set month = to_char(current_date, 'YYYY-MM')
+where month is null or trim(month) = '';
+alter table public.budgets alter column month set not null;
+
+create table if not exists public.savings_goals (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  target_amount numeric(12, 2) not null check (target_amount > 0),
+  current_amount numeric(12, 2) not null default 0 check (current_amount >= 0),
+  deadline bigint,
+  created_at timestamptz not null default now()
+);
+
+alter table public.savings_goals add column if not exists deadline bigint;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'transactions_savings_goal_id_fkey'
+      and conrelid = 'public.transactions'::regclass
+  ) then
+    alter table public.transactions
+      add constraint transactions_savings_goal_id_fkey
+      foreign key (savings_goal_id) references public.savings_goals(id) on delete set null;
+  end if;
+end $$;
+
+create index if not exists budgets_user_month_idx on public.budgets(user_id, month);
+create index if not exists savings_goals_user_idx on public.savings_goals(user_id);
+
+alter table public.budgets enable row level security;
+alter table public.savings_goals enable row level security;
+
+drop policy if exists "Finance users manage own budgets" on public.budgets;
+create policy "Finance users manage own budgets"
+on public.budgets for all to authenticated
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+drop policy if exists "Finance users manage own savings goals" on public.savings_goals;
+create policy "Finance users manage own savings goals"
+on public.savings_goals for all to authenticated
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+grant select, insert, update, delete on public.budgets to authenticated;
+grant select, insert, update, delete on public.savings_goals to authenticated;
+revoke insert, update, delete on public.accounts from authenticated;
+revoke update on public.savings_goals from authenticated;
+
+create or replace function public.apply_transaction_balance_delta(
+  p_user_id uuid,
+  p_account_id uuid,
+  p_destination_account_id uuid,
+  p_savings_goal_id uuid,
+  p_type text,
+  p_amount numeric,
+  p_direction numeric
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_account_id is not null then
+    if p_direction > 0 and p_type in ('expense', 'transfer', 'goal_contribution') then
+      update public.accounts
+      set balance = balance - p_amount
+      where id = p_account_id and user_id = p_user_id and balance >= p_amount;
+      if not found then raise exception 'Insufficient account balance'; end if;
+    else
+      update public.accounts
+      set balance = balance + case
+        when p_type in ('income', 'opening') then p_amount * p_direction
+        when p_type in ('expense', 'transfer', 'goal_contribution') then -p_amount * p_direction
+        else 0
+      end
+      where id = p_account_id and user_id = p_user_id;
+    end if;
+  end if;
+
+  if p_type = 'transfer' and p_destination_account_id is not null then
+    update public.accounts
+    set balance = balance + p_amount * p_direction
+    where id = p_destination_account_id and user_id = p_user_id;
+  end if;
+
+  if p_type = 'goal_contribution' and p_savings_goal_id is not null then
+    update public.savings_goals
+    set current_amount = current_amount + p_amount * p_direction
+    where id = p_savings_goal_id
+      and user_id = p_user_id
+      and current_amount + p_amount * p_direction >= 0;
+    if not found then raise exception 'Savings goal balance could not be updated'; end if;
+  end if;
+end;
+$$;
+
+create or replace function public.sync_transaction_account_balances()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op <> 'DELETE' then
+    if new.type = 'opening' and current_setting('finance.allow_opening_balance', true) is distinct from 'on' then
+      raise exception 'Opening balances must be created through account setup';
+    end if;
+    if new.type = 'transfer' and current_setting('finance.allow_transfer', true) is distinct from 'on' then
+      raise exception 'Transfers must be created through the transfer action';
+    end if;
+    if new.type = 'goal_contribution' and current_setting('finance.allow_goal_contribution', true) is distinct from 'on' then
+      raise exception 'Goal contributions must use the contribution action';
+    end if;
+  end if;
+
+  if tg_op in ('UPDATE', 'DELETE') then
+    perform public.apply_transaction_balance_delta(
+      old.user_id, old.account_id, old.destination_account_id, old.savings_goal_id, old.type, old.amount, -1);
+  end if;
+
+  if tg_op in ('INSERT', 'UPDATE') then
+    perform public.apply_transaction_balance_delta(
+      new.user_id, new.account_id, new.destination_account_id, new.savings_goal_id, new.type, new.amount, 1);
+    return new;
+  end if;
+
+  return old;
+end;
+$$;
+
+drop trigger if exists transactions_sync_account_balances on public.transactions;
+create trigger transactions_sync_account_balances
+after insert or update or delete on public.transactions
+for each row execute function public.sync_transaction_account_balances();
+
+revoke all on function public.apply_transaction_balance_delta(uuid, uuid, uuid, uuid, text, numeric, numeric) from public, anon, authenticated;
+revoke all on function public.sync_transaction_account_balances() from public, anon, authenticated;
+
+create or replace function public.create_account_with_opening_balance(
+  p_name text,
+  p_type text,
+  p_opening_balance numeric
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  new_account_id uuid;
+  current_user_id uuid := auth.uid();
+begin
+  if current_user_id is null then raise exception 'Authentication required'; end if;
+  if trim(coalesce(p_name, '')) = '' then raise exception 'Account name is required'; end if;
+  if p_opening_balance < 0 then raise exception 'Opening balance cannot be negative'; end if;
+
+  insert into public.accounts(user_id, name, type, balance)
+  values (current_user_id, trim(p_name), coalesce(nullif(trim(p_type), ''), 'Other'), 0)
+  returning id into new_account_id;
+
+  if p_opening_balance > 0 then
+    perform set_config('finance.allow_opening_balance', 'on', true);
+    insert into public.transactions(user_id, title, amount, type, income, category_name, account_id)
+    values (current_user_id, 'Opening balance', p_opening_balance, 'opening', false, 'Opening balance', new_account_id);
+    perform set_config('finance.allow_opening_balance', 'off', true);
+  end if;
+end;
+$$;
+
+create or replace function public.transfer_between_accounts(
+  p_source_account_id uuid,
+  p_destination_account_id uuid,
+  p_amount numeric,
+  p_title text default 'Transfer'
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_user_id uuid := auth.uid();
+  source_balance numeric;
+begin
+  if current_user_id is null then raise exception 'Authentication required'; end if;
+  if p_source_account_id = p_destination_account_id then raise exception 'Choose different accounts'; end if;
+  if p_amount is null or p_amount <= 0 then raise exception 'Transfer amount must be positive'; end if;
+
+  select balance into source_balance
+  from public.accounts
+  where id = p_source_account_id and user_id = current_user_id
+  for update;
+  if not found then raise exception 'Source account not found'; end if;
+
+  perform 1 from public.accounts
+  where id = p_destination_account_id and user_id = current_user_id;
+  if not found then raise exception 'Destination account not found'; end if;
+  if source_balance < p_amount then raise exception 'Insufficient account balance'; end if;
+
+  perform set_config('finance.allow_transfer', 'on', true);
+  insert into public.transactions(
+    user_id, title, amount, type, income, category_name, account_id, destination_account_id)
+  values (
+    current_user_id,
+    coalesce(nullif(trim(p_title), ''), 'Transfer'),
+    p_amount,
+    'transfer',
+    false,
+    'Transfer',
+    p_source_account_id,
+    p_destination_account_id);
+  perform set_config('finance.allow_transfer', 'off', true);
+end;
+$$;
+
+create or replace function public.contribute_to_savings_goal(
+  p_goal_id uuid,
+  p_account_id uuid,
+  p_amount numeric
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_user_id uuid := auth.uid();
+  goal_name text;
+begin
+  if current_user_id is null then raise exception 'Authentication required'; end if;
+  if p_amount is null or p_amount <= 0 then raise exception 'Contribution must be positive'; end if;
+
+  select name into goal_name
+  from public.savings_goals
+  where id = p_goal_id and user_id = current_user_id
+  for update;
+  if not found then raise exception 'Savings goal not found'; end if;
+
+  perform 1 from public.accounts
+  where id = p_account_id and user_id = current_user_id;
+  if not found then raise exception 'Funding account not found'; end if;
+
+  perform set_config('finance.allow_goal_contribution', 'on', true);
+  insert into public.transactions(user_id, title, amount, type, income, category_name, account_id, savings_goal_id)
+  values (current_user_id, 'Contribution: ' || goal_name, p_amount, 'goal_contribution', false, 'Savings goal', p_account_id, p_goal_id);
+  perform set_config('finance.allow_goal_contribution', 'off', true);
+end;
+$$;
+
+grant execute on function public.create_account_with_opening_balance(text, text, numeric) to authenticated;
+grant execute on function public.transfer_between_accounts(uuid, uuid, numeric, text) to authenticated;
+grant execute on function public.contribute_to_savings_goal(uuid, uuid, numeric) to authenticated;
+revoke execute on function public.create_account_with_opening_balance(text, text, numeric) from public, anon;
+revoke execute on function public.transfer_between_accounts(uuid, uuid, numeric, text) from public, anon;
+revoke execute on function public.contribute_to_savings_goal(uuid, uuid, numeric) from public, anon;
+
+notify pgrst, 'reload schema';

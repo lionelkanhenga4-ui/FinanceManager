@@ -10,7 +10,6 @@ const defaultCategories = [
   'Entertainment', 'Salary', 'Freelance', 'Other'
 ];
 const SYNC_INTERVAL_MS = 15_000;
-const SYNC_INTERVAL_MS = 15_000;
 
 const state = {
   authMode: 'login',
@@ -37,6 +36,9 @@ const els = {
   authSubmit: document.getElementById('auth-submit'),
   authForm: document.getElementById('auth-form'),
   confirmPasswordWrapper: document.getElementById('confirm-password-wrapper'),
+  emailField: document.getElementById('email-field'),
+  identityLabel: document.getElementById('identity-label'),
+  passwordField: document.getElementById('password-field'),
   emailInput: document.getElementById('email-input'),
   passwordInput: document.getElementById('password-input'),
   confirmPasswordInput: document.getElementById('confirm-password-input'),
@@ -58,6 +60,8 @@ const els = {
   transactionAmount: document.getElementById('transaction-amount'),
   transactionCategory: document.getElementById('transaction-category'),
   transactionAccount: document.getElementById('transaction-account'),
+  transactionDestinationWrapper: document.getElementById('transaction-destination-wrapper'),
+  transactionDestination: document.getElementById('transaction-destination'),
   navItems: [...document.querySelectorAll('.nav-item')],
   filterChips: [...document.querySelectorAll('.chip')],
   segButtons: [...document.querySelectorAll('.segment')]
@@ -98,7 +102,9 @@ function normalizeTransaction(row) {
     id: row.id,
     title: row.title || row.description || 'Untitled',
     amount: amountValue,
-    type: rawType === 'income' ? 'income' : 'expense',
+    type: ['income', 'expense', 'transfer', 'opening', 'goal_contribution'].includes(rawType)
+      ? rawType
+      : 'expense',
     category: row.category_name || row.category || 'Other',
     account: row.account_id || row.account || 'No account',
     date: typeof rawDate === 'number' ? new Date(rawDate).toISOString() : rawDate,
@@ -126,7 +132,25 @@ function renderAuthView() {
   els.authSubmit.textContent = isLogin ? 'Login' : 'Sign Up';
   els.switchText.textContent = isLogin ? "Don't have an account?" : 'Already have an account?';
   els.authToggle.textContent = isLogin ? 'Sign up' : 'Login';
+  els.identityLabel.textContent = isLogin ? 'Email or phone number' : 'Email';
+  els.emailInput.placeholder = isLogin ? 'name@example.com or +260...' : 'name@example.com';
+  els.authToggle.classList.remove('hidden');
+  els.emailField.classList.remove('hidden');
+  els.passwordField.classList.remove('hidden');
   els.confirmPasswordWrapper.classList.toggle('hidden', isLogin);
+  els.emailInput.required = true;
+  els.passwordInput.required = true;
+}
+
+function getAuthIdentity(input) {
+  const value = input.trim();
+  if (value.includes('@')) return { email: value };
+
+  const phone = value.replace(/[\s()-]/g, '');
+  if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
+    throw new Error('Enter a valid email or phone number in international format, such as +260765730952.');
+  }
+  return { phone };
 }
 
 function renderDashboard() {
@@ -171,9 +195,9 @@ function renderTransactionCards(items, target, compact) {
     const row = document.createElement('article');
     row.className = 'transaction-item';
 
-    const typeClass = item.type === 'income' ? 'income' : 'expense';
-    const iconText = item.type === 'income' ? '↓' : '↑';
-    const amountText = item.type === 'income' ? '+' : '-';
+    const typeClass = item.type === 'income' ? 'income' : item.type === 'expense' ? 'expense' : 'transfer';
+    const iconText = item.type === 'income' ? '↓' : item.type === 'transfer' ? '↔' : '↑';
+    const amountText = item.type === 'income' || item.type === 'opening' ? '+' : item.type === 'transfer' ? '↔ ' : '-';
     const prettyDate = new Date(item.date).toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric'
@@ -314,6 +338,16 @@ function populateTransactionSelectors() {
     });
   }
 
+  els.transactionDestination.innerHTML = '';
+  if (state.accounts.length) {
+    state.accounts.forEach((account) => {
+      const option = document.createElement('option');
+      option.value = account.id;
+      option.textContent = account.name || 'Account';
+      els.transactionDestination.appendChild(option);
+    });
+  }
+
   if (!state.categories.length) {
     defaultCategories.forEach((name) => {
       const categoryOption = document.createElement('option');
@@ -327,7 +361,8 @@ function populateTransactionSelectors() {
 function openModal(type = 'expense') {
   state.transactionType = type;
   populateTransactionSelectors();
-  els.modalTitle.textContent = type === 'income' ? 'Add Income' : 'Add Expense';
+  els.modalTitle.textContent = type === 'income' ? 'Add Income' : type === 'transfer' ? 'Transfer Funds' : 'Add Expense';
+  els.transactionDestinationWrapper.classList.toggle('hidden', type !== 'transfer');
   els.segButtons.forEach((button) => {
     button.classList.toggle('active', button.dataset.type === type);
   });
@@ -340,6 +375,7 @@ function closeModal() {
   els.transactionModal.setAttribute('aria-hidden', 'true');
   els.transactionForm.reset();
   state.transactionType = 'expense';
+  els.transactionDestinationWrapper.classList.add('hidden');
   els.segButtons.forEach((button) => {
     button.classList.toggle('active', button.dataset.type === 'expense');
   });
@@ -436,7 +472,7 @@ async function insertTransaction(transaction) {
   return true;
 }
 
-async function loadTransactions(silent = false) {
+async function deleteTransaction(id) {
   const { error } = await supabaseClient.from('transactions').delete().eq('id', id);
   if (error) {
     console.error(error);
@@ -444,86 +480,82 @@ async function loadTransactions(silent = false) {
     return false;
   }
   return true;
-  if (state.isSyncing) return;
-  state.isSyncing = true;
-  if (error) {
-  try {
-    const { data, error } = await supabaseClient
-      .from('transactions')
-      .select('*')
-      .eq('user_id', state.user.id);
-
-    if (error) {
-      console.error(error);
-      if (!silent) showError('Could not load transactions from Supabase.');
-      return;
-    }
-  } else {
-    state.transactions = (data || [])
-      .map(normalizeTransaction)
-      .sort((a, b) => new Date(b.date) - new Date(a.date));
-
-    saveState();
-    renderAll();
-  } finally {
-    state.isSyncing = false;
-  }
-  }
-
-function refreshVisibleSession() {
-  if (state.loggedIn && document.visibilityState === 'visible') {
-    void loadTransactions(true);
-  }
 }
 
-window.setInterval(refreshVisibleSession, SYNC_INTERVAL_MS);
-document.addEventListener('visibilitychange', refreshVisibleSession);
+async function initializeSession() {
+  const { data: { session }, error } = await supabaseClient.auth.getSession();
+  if (error) {
+    console.error(error);
+  }
+
+  state.user = session?.user || null;
+  state.loggedIn = Boolean(session);
+
+  if (state.loggedIn) {
+    await loadAccountsAndCategories();
+    await loadTransactions();
+  } else {
+    state.transactions = loadState('transactions', defaultTransactions);
+    renderAll();
+  }
 }
 
 async function handleLogin(event) {
   event.preventDefault();
-  const email = els.emailInput.value.trim();
+  let identity;
+  try {
+    identity = getAuthIdentity(els.emailInput.value);
+  } catch (error) {
+    showError(error.message);
+    return;
+  }
   const password = els.passwordInput.value;
 
-  if (!email || !password) {
-    showError('Enter your email and password');
+  if (!password) {
+    showError('Enter your password.');
     return;
   }
 
-  if (state.authMode === 'signup') {
-    const confirm = els.confirmPasswordInput.value;
-    if (password.length < 6) {
-      showError('Password must be at least 6 characters');
-      return;
-    }
-    if (password !== confirm) {
-      showError('Passwords do not match');
+  els.authSubmit.disabled = true;
+  try {
+    if (state.authMode === 'signup') {
+      if (!identity.email) throw new Error('Sign-up is available with an email address only.');
+      const confirm = els.confirmPasswordInput.value;
+      if (password.length < 6) throw new Error('Password must be at least 6 characters.');
+      if (password !== confirm) throw new Error('Passwords do not match.');
+
+      const { data, error } = await supabaseClient.auth.signUp({ ...identity, password });
+      if (error) throw error;
+
+      if (data?.session) {
+        state.user = data.user || data.session.user;
+        state.loggedIn = Boolean(state.user);
+        els.authForm.reset();
+        await loadAccountsAndCategories();
+        await loadTransactions();
+      } else {
+        showError('Account created. Please confirm your email, then log in.');
+        state.authMode = 'login';
+        renderAuthView();
+      }
       return;
     }
 
-    const { error } = await supabaseClient.auth.signUp({ email, password });
-    if (error) {
-      showError(error.message || 'Sign up failed.');
-      return;
-    }
+    const { data, error } = await supabaseClient.auth.signInWithPassword({ ...identity, password });
+    if (error) throw error;
 
-    showError('Success! Please confirm your email.');
-    state.authMode = 'login';
-    renderAuthView();
-    els.authForm.reset();
-    return;
+    state.user = data?.user || null;
+    if (!state.user) throw new Error('Sign in returned no user session. Please try again.');
+    state.loggedIn = true;
+    renderAll();
+    await loadAccountsAndCategories();
+    await loadTransactions();
+  } catch (error) {
+    console.error('Authentication failed:', error);
+    showError(error.message || 'Authentication failed. Check your connection and try again.');
+  } finally {
+    els.authSubmit.disabled = false;
   }
-
-  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-  if (error) {
-    showError(error.message || 'Login failed.');
-    return;
-  }
-
-  state.user = data?.user || null;
-  state.loggedIn = true;
-  await loadAccountsAndCategories();
-  await loadTransactions();
 }
 
 async function handleAddTransaction(event) {
@@ -535,6 +567,32 @@ async function handleAddTransaction(event) {
 
   if (!title || !amount || amount <= 0) {
     showError('Please provide a valid title and amount');
+    return;
+  }
+
+  if (state.transactionType === 'transfer') {
+    const sourceAccountId = els.transactionAccount.value;
+    const destinationAccountId = els.transactionDestination.value;
+    if (!sourceAccountId || !destinationAccountId || sourceAccountId === destinationAccountId) {
+      showError('Choose two different accounts for the transfer.');
+      return;
+    }
+
+    const { error } = await supabaseClient.rpc('transfer_between_accounts', {
+      p_source_account_id: sourceAccountId,
+      p_destination_account_id: destinationAccountId,
+      p_amount: amount,
+      p_title: title
+    });
+    if (error) {
+      console.error(error);
+      showError(error.message || 'Could not transfer funds.');
+      return;
+    }
+
+    closeModal();
+    await loadTransactions();
+    await loadAccountsAndCategories();
     return;
   }
 
@@ -605,7 +663,10 @@ function initializeEvents() {
     button.addEventListener('click', () => {
       state.transactionType = button.dataset.type;
       els.segButtons.forEach((seg) => seg.classList.toggle('active', seg === button));
-      els.modalTitle.textContent = state.transactionType === 'income' ? 'Add Income' : 'Add Expense';
+      els.modalTitle.textContent = state.transactionType === 'income'
+        ? 'Add Income'
+        : state.transactionType === 'transfer' ? 'Transfer Funds' : 'Add Expense';
+      els.transactionDestinationWrapper.classList.toggle('hidden', state.transactionType !== 'transfer');
     });
   });
 }

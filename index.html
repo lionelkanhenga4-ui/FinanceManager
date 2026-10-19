@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Finance Manager</title>
+    <meta name="description" content="A clear, simple way to track your balance, transactions, and spending." />
+    <meta name="theme-color" content="#f3f7f6" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -31,12 +33,12 @@
             </div>
 
             <form id="auth-form" class="auth-form">
-              <label class="field">
-                <span>Email</span>
-                <input id="email-input" type="email" placeholder="name@example.com" required />
+              <label id="email-field" class="field">
+                <span id="identity-label">Email or phone number</span>
+                <input id="email-input" type="text" placeholder="name@example.com or +260..." autocomplete="username" required />
               </label>
 
-              <label class="field">
+              <label id="password-field" class="field">
                 <span>Password</span>
                 <input id="password-input" type="password" placeholder="••••••••" required />
               </label>
@@ -178,6 +180,7 @@
           <div class="segment-control">
             <button class="segment active" data-type="expense" type="button">Expense</button>
             <button class="segment" data-type="income" type="button">Income</button>
+            <button class="segment" data-type="transfer" type="button">Transfer</button>
           </div>
 
           <label class="field">
@@ -213,6 +216,11 @@
               <option value="Savings">Savings</option>
               <option value="Credit Card">Credit Card</option>
             </select>
+          </label>
+
+          <label id="transaction-destination-wrapper" class="field hidden">
+            <span>To account</span>
+            <select id="transaction-destination"></select>
           </label>
 
           <button type="submit" class="primary-btn wide">Save Transaction</button>
